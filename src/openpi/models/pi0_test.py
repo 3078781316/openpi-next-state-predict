@@ -44,3 +44,20 @@ def test_pi0_all_lora():
     assert len(state) == 17
     assert all("lora" not in p for p in state)
     assert all("llm" in p for p in state)
+
+
+def test_pi05_future_state_lora_freezes_bases_and_vision():
+    config = _pi0_config.Pi0Config(
+        pi05=True,
+        paligemma_variant="gemma_2b_lora",
+        action_expert_variant="gemma_300m_lora",
+        predict_future_states=True,
+        freeze_vision_encoder=True,
+    )
+    state = _get_frozen_state(config)
+    paths = ["/".join(map(str, path)) for path in state]
+
+    assert any("llm" in path for path in paths)
+    assert any("img" in path for path in paths)
+    assert all("lora" not in path for path in paths)
+    assert all("future_state" not in path for path in paths)

@@ -41,6 +41,10 @@ class Pi0Config(_model.BaseModelConfig):
     state_dim: int | None = None
     future_state_loss_weight: float = 1.0
     detach_future_state_condition: bool = True
+    # LoRA is implemented in the language/action transformers, not in SigLIP. Enabling this
+    # option keeps the vision tower frozen so a "low-memory" LoRA run does not accidentally
+    # full-finetune the image encoder.
+    freeze_vision_encoder: bool = False
 
     pytorch_compile_mode: str | None = "max-autotune"
 
@@ -145,6 +149,10 @@ class Pi0Config(_model.BaseModelConfig):
             filters.append(
                 nnx.Not(nnx_utils.PathRegex(".*lora.*")),
             )
-        if not filters:
-            return nnx.Nothing
-        return nnx.All(*filters)
+        freeze_filter = nnx.Nothing if not filters else nnx.All(*filters)
+        if self.freeze_vision_encoder:
+            freeze_filter = nnx.Any(
+                freeze_filter,
+                nnx_utils.PathRegex(".*PaliGemma.*img.*"),
+            )
+        return freeze_filter

@@ -29,8 +29,13 @@ uninterpretable latent code.
 ## Configurations
 
 - `pi05_libero_future_state`
+- `pi05_libero_future_state_lora`
 - `pi05_full_droid_future_state_finetune`
 - `pi05_droid_future_state_finetune`
+- `pi05_droid_future_state_lora_finetune`
+
+The LoRA variants adapt both the PaliGemma language transformer and action expert, freeze
+their base weights and the SigLIP vision tower, and fully train the future-state/action heads.
 
 Change the placeholder DROID paths/repository IDs before training. Compute normalization statistics as usual when
 training on a new dataset; future states reuse the current-state statistics.
