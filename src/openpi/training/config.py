@@ -873,6 +873,52 @@ _CONFIGS = [
         ema_decay=None,
         num_train_steps=30_000,
     ),
+    TrainConfig(
+        # Original pi0.5 action-denoising baseline with LoRA on both transformer
+        # experts. This intentionally disables explicit future-state prediction.
+        name="pi05_libero_lora",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            state_dim=8,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            predict_future_states=False,
+            freeze_vision_encoder=True,
+            pytorch_compile_mode=None,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        batch_size=64,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=2_000,
+            peak_lr=5e-5,
+            decay_steps=30_000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params",
+            missing_regex=".*lora.*",
+        ),
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            state_dim=8,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            predict_future_states=False,
+            freeze_vision_encoder=True,
+            pytorch_compile_mode=None,
+        ).get_freeze_filter(),
+        ema_decay=None,
+        num_train_steps=30_000,
+    ),
     #
     # Fine-tuning Aloha configs.
     #
