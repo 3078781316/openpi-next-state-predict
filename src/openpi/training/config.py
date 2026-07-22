@@ -16,6 +16,7 @@ import tyro
 import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
+import openpi.models.pi0_frequency_rvq as pi0_frequency_rvq
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
@@ -771,6 +772,55 @@ _CONFIGS = [
         ).get_freeze_filter(),
         # Turn off EMA for LoRA finetuning.
         ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi0_frequency_rvq_libero",
+        model=pi0_frequency_rvq.Pi0FrequencyRVQConfig(
+            action_dim=7,
+            action_horizon=16,
+            max_token_len=180,
+            fast_model_tokenizer=_tokenizer.FrequencyRVQActionTokenizer,
+            fast_model_tokenizer_kwargs={
+                "tokenizer_path": "./checkpoints/frequency_rvq_libero/best",
+            },
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            assets=AssetsConfig(assets_dir="./data", asset_id="frequency_rvq_libero"),
+            base_config=DataConfig(prompt_from_task=True),
+            # LIBERO actions are already deltas. This must match tokenizer-data preparation.
+            extra_delta_transform=False,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi0_frequency_rvq_libero_low_mem_finetune",
+        model=pi0_frequency_rvq.Pi0FrequencyRVQConfig(
+            action_dim=7,
+            action_horizon=16,
+            max_token_len=180,
+            paligemma_variant="gemma_2b_lora",
+            fast_model_tokenizer=_tokenizer.FrequencyRVQActionTokenizer,
+            fast_model_tokenizer_kwargs={
+                "tokenizer_path": "./checkpoints/frequency_rvq_libero/best",
+            },
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            assets=AssetsConfig(assets_dir="./data", asset_id="frequency_rvq_libero"),
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
+        freeze_filter=pi0_frequency_rvq.Pi0FrequencyRVQConfig(
+            action_dim=7,
+            action_horizon=16,
+            max_token_len=180,
+            paligemma_variant="gemma_2b_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+        num_train_steps=30_000,
     ),
     TrainConfig(
         name="pi05_libero",

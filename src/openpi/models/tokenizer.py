@@ -5,8 +5,11 @@ import jax
 import numpy as np
 import orbax.checkpoint as ocp
 import sentencepiece
+import torch
 from transformers import AutoProcessor
 
+from openpi.models.utils.frequency_rvq_tokenizer import FrequencyRVQTokenizerModel
+from openpi.models.utils.frequency_rvq_tokens import DEFAULT_FREQUENCY_RVQ_LAYOUT
 import openpi.models.utils.fsq_tokenizer as fsq_tokenizer
 import openpi.shared.download as download
 
@@ -137,6 +140,97 @@ class FASTTokenizer:
         if isinstance(tokens, list):
             tokens = np.array(tokens)
         return self._paligemma_tokenizer.vocab_size() - 1 - self._fast_skip_tokens - tokens
+
+
+class FrequencyRVQActionTokenizer:
+    """Adapter between a frozen PyTorch frequency-RVQ model and Pi0FAST token sequences."""
+
+    def __init__(self, max_len: int = 256, tokenizer_path: str | None = None):
+        if tokenizer_path is None:
+            raise ValueError("tokenizer_path must point to a trained frequency-RVQ checkpoint")
+        self._max_len = max_len
+        path = download.maybe_download("gs://big_vision/paligemma_tokenizer.model", gs={"token": "anon"})
+        with path.open("rb") as f:
+            self._paligemma_tokenizer = sentencepiece.SentencePieceProcessor(model_proto=f.read())
+        checkpoint_path = download.maybe_download(tokenizer_path)
+        self._rvq_tokenizer = FrequencyRVQTokenizerModel.from_pretrained(str(checkpoint_path))
+        self._rvq_tokenizer.eval()
+        self._layout = DEFAULT_FREQUENCY_RVQ_LAYOUT
+        expected_sizes = (
+            self._rvq_tokenizer.config.low_codebook_size,
+            *(
+                self._rvq_tokenizer.config.high_codebook_size
+                for _ in range(self._rvq_tokenizer.config.num_residual_stages)
+            ),
+        )
+        if expected_sizes != self._layout.codebook_sizes:
+            raise ValueError(
+                f"Tokenizer codebooks {expected_sizes} do not match the Pi0 frequency-RVQ layout "
+                f"{self._layout.codebook_sizes}"
+            )
+
+    def tokenize(
+        self, prompt: str, state: np.ndarray, actions: np.ndarray | None
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        cleaned_text = prompt.lower().strip().replace("_", " ")
+        discretized_state = np.digitize(state, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
+        state_str = " ".join(map(str, discretized_state))
+        prefix = f"Task: {cleaned_text}, State: {state_str};\nAction: "
+        prefix_tokens = self._paligemma_tokenizer.encode(prefix, add_bos=True)
+
+        action_tokens: list[int] = []
+        if actions is not None:
+            expected_shape = (
+                self._rvq_tokenizer.config.action_horizon,
+                self._rvq_tokenizer.config.action_dim,
+            )
+            if actions.shape != expected_shape:
+                raise ValueError(f"Expected normalized actions {expected_shape}, got {actions.shape}")
+            action_tensor = torch.from_numpy(np.asarray(actions, dtype=np.float32))[None]
+            code_ids = self._rvq_tokenizer.encode(action_tensor)[0].cpu().tolist()
+            vocab_size = self._paligemma_tokenizer.vocab_size()
+            action_tokens = [
+                self._layout.paligemma_id(self._layout.local_id(stage, int(code_id)), vocab_size)
+                for stage, code_id in enumerate(code_ids)
+            ]
+
+        tokens = prefix_tokens + action_tokens
+        token_mask = [True] * len(tokens)
+        ar_mask = [0] * len(prefix_tokens) + [1] * len(action_tokens)
+        loss_mask = [False] * len(prefix_tokens) + [True] * len(action_tokens)
+        if len(tokens) > self._max_len:
+            raise ValueError(
+                f"Frequency-RVQ sequence length {len(tokens)} exceeds max_token_len={self._max_len}; "
+                "increase max_token_len because truncating action targets is unsafe"
+            )
+        padding = [False] * (self._max_len - len(tokens))
+        return (
+            np.asarray(tokens + padding, dtype=np.int32),
+            np.asarray(token_mask + padding, dtype=bool),
+            np.asarray(ar_mask + padding, dtype=np.int32),
+            np.asarray(loss_mask + padding, dtype=bool),
+        )
+
+    def extract_actions(self, tokens: np.ndarray, action_horizon: int, action_dim: int) -> np.ndarray:
+        if action_horizon != self._rvq_tokenizer.config.action_horizon:
+            raise ValueError("Policy and frequency-RVQ action horizons do not match")
+        if action_dim != self._rvq_tokenizer.config.action_dim:
+            raise ValueError("Policy and frequency-RVQ action dimensions do not match")
+        flat_tokens = np.asarray(tokens, dtype=np.int64).reshape(-1)
+        if len(flat_tokens) < self._layout.num_stages:
+            raise ValueError(f"Expected {self._layout.num_stages} generated action tokens")
+        vocab_size = self._paligemma_tokenizer.vocab_size()
+        code_ids = []
+        for stage, token in enumerate(flat_tokens[: self._layout.num_stages]):
+            local_id = self._layout.local_id_from_paligemma(int(token), vocab_size)
+            offset = self._layout.offsets[stage]
+            code_id = local_id - offset
+            if not 0 <= code_id < self._layout.codebook_sizes[stage]:
+                raise ValueError(f"Token {token} is invalid at frequency-RVQ stage {stage}")
+            code_ids.append(code_id)
+        with torch.no_grad():
+            action_tensor = self._rvq_tokenizer.decode(torch.tensor([code_ids], dtype=torch.long))
+        return action_tensor[0].cpu().numpy().astype(np.float32)
 
 
 ###########################################################################
